@@ -29,12 +29,20 @@ process and changing it. The skill encodes the whole loop:
 - **Offline simulation** — a type-strict fake-FFI harness for `lupa`, plus **mutation testing**,
   which between them caught real bugs before they ever reached the game.
 
-### Two worked case studies
+### Three worked case studies
 
 | Case | What it does |
 |---|---|
 | [Eruptor round on the Dominator](skills/hd2-lua-mod/references/hd2-eruptor-dominator-案例.md) | Copies the R-36 Eruptor's projectile record onto the JAR-5 Dominator |
 | [Double Leveller](skills/hd2-lua-mod/references/hd2-leveller-double-案例.md) | Makes one EAT-411 Leveller call-in drop **two** launchers — a **64-byte** patch, found entirely offline and verified in one game session |
+| [Orbital Laser: unlimited uses](skills/hd2-lua-mod/references/hd2-orbital-laser-案例.md) | Removes the per-mission use cap and cuts the cooldown 300 → 180 s. Started from a **community-decoded JSON**; hit the "DLArray is a pointer in memory, an offset on disk" trap and a scanner that wrecked frame pacing; ends with **whole-table self-calibration**, which overturned the offset derived offline |
+
+### Where to get the data
+
+FileDiver's `datalibrary/` covers about 20 of the game's **57** `generated_*.dl_bin` files.
+For the rest, start with the community's decoded JSON —
+[shalzuth/HelldiversData](https://github.com/shalzuth/HelldiversData) (`data/settings/`, `data/components/`,
+`data/entities/`, `data/enums/`, `data/translations/`). See SKILL.md §0.
 
 ---
 

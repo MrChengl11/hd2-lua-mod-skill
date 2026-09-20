@@ -23,12 +23,20 @@
 - **运行时补丁** —— 校验 → 备份 → `VirtualProtect` → 写入 → 回读 → 复查 的标准套路。
 - **离线仿真** —— 类型严格的假 FFI 环境(`lupa`)+ **变异测试**,这两样在上机前抓到过真 bug。
 
-### 两个完整案例
+### 三个完整案例
 
 | 案例 | 做了什么 |
 |---|---|
 | [爆裂铳射弹套主宰](skills/hd2-lua-mod/references/hd2-eruptor-dominator-案例.md) | 把 R-36 爆裂铳的射弹记录整体拷到 JAR-5 主宰上 |
 | [双倍荡平者](skills/hd2-lua-mod/references/hd2-leveller-double-案例.md) | 让 EAT-411 荡平者一次空投**两根** —— **64 字节**的补丁,全程离线算出,一次实机验证通过 |
+| [轨道激光取消次数限制](skills/hd2-lua-mod/references/hd2-orbital-laser-案例.md) | 取消每次任务的次数上限 + 冷却 300 → 180 秒。从**社区解好的明文 JSON** 起步;踩中「DLArray 在内存里是指针、在文件里是偏移」和「扫描器拖垮帧率」两个坑;最后靠**整表复现反推偏移**,并推翻了自己在离线阶段的推导 |
+
+### 数据从哪来
+
+FileDiver 的 `datalibrary/` 只覆盖游戏那 **57 个** `generated_*.dl_bin` 里的约 20 个。
+其余的先看社区解好的明文 JSON:[shalzuth/HelldiversData](https://github.com/shalzuth/HelldiversData)
+(`data/settings/`、`data/components/`、`data/entities/`、`data/enums/`、`data/translations/`)。
+细节见 SKILL.md 第 0 节。
 
 ---
 
