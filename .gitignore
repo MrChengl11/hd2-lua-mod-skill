@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# game data dumps -- large, and reproducible (see README "Getting the game data")
+*.dl_bin
+*.dl_bin.gz
+*.dl_typelib
+typelib_all.json
+typelib_names.tsv
+*_baseline*/
+
+# build output
+build/
+*.zip
+*.patch_[0-9]*
+*.exe
+
+# scratch
+_work/
+*.log
