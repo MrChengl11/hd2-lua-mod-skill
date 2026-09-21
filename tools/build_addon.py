@@ -40,6 +40,21 @@ def entry_source(name: str, source: bytes) -> bytes:
     return marker + source
 
 
+_ILLEGAL_NAME_CHARS = set('\\/:*?"<>|')
+
+
+def check_display_name(title: str) -> None:
+    """Mod managers turn the manifest Name into a folder/file name -- keep it legal."""
+    bad = sorted(_ILLEGAL_NAME_CHARS.intersection(title))
+    if bad:
+        raise ValueError(
+            "display name contains characters Windows forbids in file names %s: %r -- "
+            "mod managers use this string as a folder name, so the import fails"
+            % (bad, title))
+    if not title.isascii():
+        print("WARNING: display name is not ASCII (%r); some mod managers mishandle it" % title)
+
+
 def build_package(name, entry_path, guid, output, display_name=None, extra=None):
     """extra: optional {resource_name: lua_bytes} packaged alongside the entry."""
     body = entry_source(name, open(entry_path, "rb").read())
@@ -50,7 +65,8 @@ def build_package(name, entry_path, guid, output, display_name=None, extra=None)
 
     guid = str(uuid.UUID(guid))
     title = display_name or name
-    description = "Requires Bingus Shared Loader v15 or newer / API 1. Enable both and deploy."
+    check_display_name(title)
+    description = "Requires Bingus Shared Loader v15 or newer (API 1). Enable both and deploy."
     manifest = {
         "Version": 1,
         "Guid": guid,
