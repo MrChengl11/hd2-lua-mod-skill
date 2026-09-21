@@ -66,7 +66,9 @@ def build_package(name, entry_path, guid, output, display_name=None, extra=None)
     guid = str(uuid.UUID(guid))
     title = display_name or name
     check_display_name(title)
-    description = "Requires Bingus Shared Loader v15 or newer (API 1). Enable both and deploy."
+    description = ("Needs Bingus Shared Loader v15 or newer with addon support enabled. "
+                   "Nothing else is required: 'API 1' is the loader's own Lua API level "
+                   "(printed in BingusSharedLoader.log), not a separate mod.")
     manifest = {
         "Version": 1,
         "Guid": guid,

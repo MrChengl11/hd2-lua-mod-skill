@@ -127,6 +127,8 @@ def dlsum(name):                  # "HellpodRackComponentData" -> 0xA98BB156
 | 数据表块魔数 | `LDLD` + u32 版本(=1) + u32 类型哈希 + u32 大小 |
 | Loader 占用的资源 | `core/wwise/lua/wwise_flow_callbacks` = `0x7251FDD9BB62480A` |
 | 共享日志目录 | `%LOCALAPPDATA%/CowboyBingus/Helldivers2/Logs` |
+| Loader 日志 | 同目录 `BingusSharedLoader.log`;首行 `Bingus Shared Loader loader-v15; API 1`,还有一行 `Discovery: N declared entries`(列出本次发现的 addon) |
+| "API 1" 是什么 | **loader 自己上报的 Lua API 等级**,不是另一个 mod。v15 就满足;包装好后无需任何额外下载 |
 | 反作弊 | **nProtect GameGuard**(安装目录 `bin/GameGuard`) |
 
 **GameGuard 意味着:不要从外部进程读游戏内存。**
@@ -279,6 +281,12 @@ mod manager 普遍拿 `manifest.json` 的 `Name` 当文件夹/文件名。
 (`轨道激光:取消次数限制`),而同一个作者之前所有能正常导入的 mod,`Name` 全是纯 ASCII。
 **`Name` 保持纯 ASCII,且不含 `\ / : * ? " < > |`**。
 打包脚本里加一道自检(见 `tools/build_addon.py` 的 `check_display_name`),别再靠人肉记住。
+
+**同一个 manifest 的 `Description` 也要自己写一遍。** 生态里流传的模板文案是
+`"Requires Bingus Shared Loader v15 or newer / API 1. Enable both and deploy."`,
+那句 "Enable **both**" 会让用户以为还要再装第二个 mod —— 实测真的有人这么来问。
+写清楚:只要 loader 一个;"`API 1`" 是 loader 自己的 API 等级、写在 `BingusSharedLoader.log` 首行。
+**面向用户的每一句文案都是支持成本。**
 
 顺带两条分发相关的:
 * 两个 addon 的 ZIP 里都带着 `Addon/9ba626afa44a3aa3.patch_0`。**管理器会在部署时重排编号**,
