@@ -128,7 +128,8 @@ def dlsum(name):                  # "HellpodRackComponentData" -> 0xA98BB156
 | Loader 占用的资源 | `core/wwise/lua/wwise_flow_callbacks` = `0x7251FDD9BB62480A` |
 | 共享日志目录 | `%LOCALAPPDATA%/CowboyBingus/Helldivers2/Logs` |
 | Loader 日志 | 同目录 `BingusSharedLoader.log`;首行 `Bingus Shared Loader loader-v15; API 1`,还有一行 `Discovery: N declared entries`(列出本次发现的 addon) |
-| "API 1" 是什么 | **loader 自己上报的 Lua API 等级**,不是另一个 mod。v15 就满足;包装好后无需任何额外下载 |
+| "API 1" 是什么 | **loader 自己上报的 Lua API 等级**,不是另一个 mod。**API 1 从 loader v15 起才有,v14 是 API 0** |
+| Loader 版本闸门 | loader 在 `_G.CowboyBingusModLoader` 里放 `= { api = 1, version = 16, modules = {} }`(v16 快照)。addon 开头读它就能判断环境够不够;读不到再退化去解析 `BingusSharedLoader.log` 首行 |
 | 反作弊 | **nProtect GameGuard**(安装目录 `bin/GameGuard`) |
 
 **GameGuard 意味着:不要从外部进程读游戏内存。**
@@ -311,7 +312,26 @@ mod manager 普遍拿 `manifest.json` 的 `Name` 当文件夹/文件名。
 3. 复查时必须用**当前**字节判定:从地址重读的记录其实是"从这条记录开始"的 N 字节,
    塞回原来的记录结构时要记得把**记录内偏移归 1**,否则判定会读越界并静默失败。
 
-### 6.18 诊断要在设计时就假设"这次会失败"
+### 6.18 启动时先做**环境闸门**,不满足就立刻停手
+loader 版本不够(实测:v14 = API 0)时,addon **照样会被加载、照样会跑** ——
+它不会报错,只会安静地做不成事。如果你什么都不检查,用户看到的就是"一直在 working",
+而真正的原因(loader 太旧)永远不会出现在任何日志里。
+
+所以 addon 开头就该问一句:
+
+```lua
+local l = rawget(_G, "CowboyBingusModLoader")   -- { api = 1, version = 16 }
+local api = type(l) == "table" and tonumber(l.api) or nil
+if api and api < 1 then
+    -- 写入 STATUS.txt 第一行,然后 return:不扫描、不写内存
+end
+```
+
+读不到这个 global 时**不要直接拒绝**(将来可能有别的 loader),再退化去读
+`%LOCALAPPDATA%/CowboyBingus/Helldivers2/Logs/BingusSharedLoader.log` 的首行 `loader-v(\d+); API (\d+)`,
+同时还把版本号**写进状态文件**,以后每张支持工单都自带环境信息。
+
+### 6.19 诊断要在设计时就假设"这次会失败"
 "一次机会"的 addon,失败路径必须自带证据,**否则第二轮还是侦察**。两个救过场的产物:
 
 | 产物 | 内容 | 救在哪 |
