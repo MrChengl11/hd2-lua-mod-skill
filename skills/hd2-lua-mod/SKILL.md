@@ -495,6 +495,188 @@ f32 编码器写错了、回读时又用同一个编码器算期望值 ⇒ 永�
 
 直接照抄"9"会得到 9 × 0.6 = 5.4 秒,**看着像但其实不一样**,换套舰船模块立刻露馅。
 
+### 6.33 「写死的表大小 / 记录数」闸门会在构建更新后**静默失效**
+
+这是本次事故的总根因,一次更新同时打掉了五个 mod 里的四个。
+
+实测(1.8.45317.0 → 1.8.45850.0):
+
+| 表 | 旧构建 | 新构建 |
+|---|---|---|
+| `BombardmentComponentData` | size 4672(40 bucket + 21 组件) | **5120**(多了 28 个 16 字节 bucket) |
+| `ProjectileSettings` | 93312 / 343 条 | **95216 / 350 条**(多了 7 条 × 272) |
+
+代码里写的是 `if size ~= 4672 then return false`、`if cnt ~= 343 then return nil` —— 于是**每一个候选区块都被拒**,
+mod 一个字节都不写。而症状看起来像「mod 坏了」,日志里只有一行 `candidate 0x… rejected: size 5120`。
+
+**规则:表大小、记录数、bucket 数、组件数、组件步长,一个都不许当准入条件。**
+只认 `LDLD + 版本(=1) + 类型哈希`,其余全部**运行时推导 + 内容校验**:
+
+```lua
+-- DLArray 形态(ProjectileSettings / StratagemSettings …):
+--   +24 起 16 字节描述符 (u64 ptr, u64 count),记录从 ptr 开始
+local stride = (size - 16) / cnt        -- 必须整除,再落进 [64, 4096]
+-- INLINE_ARRAY 形态(Bombardment / HellpodRack …):
+--   数据直接排在 +24 后面,桶数组 16 字节一项,组件步长靠内容指纹反推
+```
+
+### 6.34 判据本身会成为故障源:会漂移的量**不能当硬性 pin**
+
+`DamageInfoType` / `ExplosionType` 也是**枚举下标**,它们跟 `ProjectileType` 一样会漂移:
+15x100mm 家族的 `DamageInfoType` 在 24826606 是 **144**,在 1.8.45850 是 **149**。
+
+我们把它当硬性 pin(命中 +3,并要求所有 pin 全中),结果**在正确的记录上判据失败**:
+
+```
+最佳候选 record 256: name=0x095D6C88 speed=180 mass=100 drag=0 grav=0.3 dmg=149 -> 得分 6
+内容识别失败: R-36 Eruptor round 在表里找不到 (最佳得分 6, 并列 2)
+```
+
+它**本该**接受这条记录。而 mod 的行为是「判据不过就拒绝写入」——于是安全网在正确数据上开火,
+用户看到的是「没生效」,真正的错误却只出现在一行打分日志里。
+
+地毯式轰炸踩的是同一个坑、同一个形状:它其实**找到了**表(地址、`count=350`、`stride=272` 和隔壁 mod 一字不差),
+却因为"最高分只有 10/16,不到阈值 14"把表判成没用,继续退回写死的值。
+
+**判据分层的配方**:
+
+| 层级 | 字段 | 权重 | 说明 |
+|---|---|---|---|
+| 主键 | `name_upper`(本地化键的哈希) | 必须命中,否则直接否 | 跨构建稳定 |
+| 硬判据 | speed / mass / calibre / drag / gravity | 各 2~3 分 | **物理量**,平衡性调整只动 speed,留 ±2.0 容差 |
+| 弱提示 | damage / explosion 等枚举 | 各 1 分,**漂移只丢分不改结论** | 绝不参与否决 |
+
+通过条件写成「硬判据 ≥ 4/5 **且** 总分 ≥ 阈值 **且** 唯一最高分」,
+而**不是**「每个 pin 都必须精确命中」。判据不通过时要落盘候选清单,别只写"没找到"。
+
+### 6.35 认记录要用 `name_upper`,不要用枚举下标
+
+技能 6.26 说过"枚举下标会被回收",本次拿到了完整的实测对照,而且**两个方向都撞上了**:
+
+| 枚举 | 旧构建含义 | 新构建含义 |
+|---|---|---|
+| `ProjectileType 201` | P/40-K 爆弹手枪弹头(speed 350, drag 0, grav 0.30, dmg 151) | **另一个完全不同的射弹**(speed 30, drag 0.40, grav 1.00, dmg 189) |
+| `ProjectileType 237` | 500kg 炸弹(mass 500, cal 50, expl 189) | 无法保证 |
+
+后果不是"找不到",而是**静默写错**:mod 报告 `APPLIED … -> Dominator`,实际把另一个射弹拷了上去。
+
+**正确写法:枚举 id 只当提示 —— 先按 id 取记录,再用稳定指纹校验;不过就退回全表按内容查找。**
+
+```lua
+-- 射弹记录(ProjectileInfo,272 字节)里稳定的字段:
+--   +0   u32  ProjectileType id      ← 会漂移,只作提示
+--   +4   u32  name_upper             ← 本地化键哈希,主键
+--   +8   u32  name_cased
+--   +24  f32  calibre                ← 物性,稳定
+--   +32  f32  speed                  ← 物性,平衡性会动,留容差
+--   +36  f32  mass                   ← 物性,稳定
+--   +40  f32  drag                   ← 物性,稳定
+--   +44  f32  gravity_multiplier     ← 物性,稳定
+--   +60  u32  damage_info_type       ← 枚举,会漂移
+--   +144 u32  explosion_on_impact    ← 枚举,会漂移
+```
+
+**"先按 id 再校验"还有一个附带好处**:同一个 name 组里有多条记录时(例如类型 40 和 205 共用 name、
+只有爆炸不同),配置里的 id 天然就是那个 tie-breaker,不需要靠 explosion 去分。
+
+### 6.36 FFI 类型双关 + LuaJIT 热循环 = 读到陈旧值
+
+这个坑很隐蔽,而且**只在循环里发作**,单次调用看不出来:
+
+```lua
+-- 曾经这么写(危险)
+local u32_scratch = ffi.new("uint32_t[1]")
+local f32_view = ffi.cast("float *", u32_scratch)
+local function f32_at(s, i) u32_scratch[0] = <bits>; return tonumber(f32_view[0]) end
+```
+
+逐条记录扫描(343 条 × 若干字段)时,LuaJIT 会把通过别名指针的那次 float 读缓存进寄存器,
+于是**部分字段读到上一轮的值**,打分算出 6 分而不是 9 分 —— 而单独一次日志调用永远是对的。
+表现为"同一个函数连续调用,结果时对时错"。
+
+**改成纯 Lua 解码,并加启动自检:**
+
+```lua
+local function bits_to_f32(bits)
+    local sign = 1
+    if bits >= 2147483648 then sign = -1; bits = bits - 2147483648 end
+    local exp  = math.floor(bits / 8388608)
+    local mant = bits - exp * 8388608
+    if exp == 255 then return mant == 0 and sign * math.huge or 0/0 end
+    if exp == 0 then return mant == 0 and sign * 0.0 or sign * mant * 2 ^ -149 end
+    return sign * (1 + mant / 8388608) * 2 ^ (exp - 127)
+end
+-- 自检:0x3F800000=1.0 / 0x43AF0000=350.0 / 0x42C80000=100.0 / 0x3E800000=0.25 …
+-- 不对就 state.status = "float_decoder_broken" 并 return,绝不带着错解码器跑。
+```
+
+顺带一个真实的小插曲:自检常量本身也要写对(`0.25 == 0x3E800000`,不是 `0x0000803E` —— 后者是反过来的字节序)。
+我们第一次就把自检写挂了,而**自检正确地拦住了自己**,没有带着错解码器上机。
+
+### 6.37 每帧重试的循环会把日志刷成灾难
+
+`apply()` 在每帧被调用直到成功,而失败分支里写了一句 `log("source round not found …")`:
+
+> 8 分钟 → **26 256 行完全相同的日志 / 1.1 MB**,而且每次都在做一次全表 350 条记录的扫描。
+
+**规则:失败路径一律 log_once(内容变了才打)+ 退避(`state.next_apply_frame = frames + 300`)。**
+1.1 MB 的重复日志除了白白 churn 磁盘,还会掩盖真正的信息。
+
+### 6.38 「mod 突然不生效」第一步先看 loader 的发现列表
+
+一次实测教训:用户报「荡平者变成一根了」,我们以为是补丁逻辑坏了、查了半天 —— 真因是
+**HD2 Mod Manager 在重新 Deploy 时把 `mods/dsh/double_leveller` 整个丢掉了**:
+
+```
+Bingus Shared Loader loader-v15; API 1
+Discovery: 4 declared entries
+mods/dsh/dominator_eruptor: loaded
+mods/dsh/double_barrage: loaded
+mods/dsh/orbital_laser_free: loaded
+mods/dsh/eagle_carpet_bomb: loaded
+        ← double_leveller 不在这张表里
+```
+
+**排查顺序(成本从低到高)**:
+
+1. `BingusSharedLoader.log` 的 Discovery 列表里,这个 addon 在不在?状态是 loaded 还是 not installed?
+2. `data/` 里的 patch_N 现在装的是谁?(用 inspect_patch.py 读首行声明)—— 管理器**会重排槽位**,
+   实测一次 Deploy 之后 32~38 全变了号,还出现了重复槽位。
+3. 都没有 → 才去查补丁逻辑。
+
+**推论:直接改 `data/patch_N` 只能当临时手段。** 只要用户再用管理器 Deploy 一次,
+你手写的槽位就会被它库里的旧版本覆盖甚至删掉。**交付时永远要把新 zip 交给管理器导入,
+并且在说明里写清这一步。**
+
+### 6.39 一次性把整张活表落盘 = 把"猜"换成"对答案"
+
+本次来回三轮,每一轮都在猜新构建的数值。最后加了 20 行代码解决:
+
+```lua
+-- 定位到表之后只做一次:
+--   idx, type_id, name_upper, calibre(+24), speed(+32), mass(+36),
+--   drag(+40), gravity(+44), damage(+60), expl_impact(+144)
+write_file("projectile_table.txt", …)   -- 350 行,几十 KB
+```
+
+拿到之后,身份指纹、漂移量、枚举回收全部**可以被直接算出来**,而不是从旧构建的 JSON 里推。
+**任何"要在运行时认表里的记录"的 mod,第一版就该带这个 dump。**
+
+### 6.40 离线就能算出新构建的表大小(不用等实机)
+
+游戏 `data/game/generated_*.dl_bin` 是加密的,但它**只比 FileDiver 的明文多 48 字节**:
+
+```
+新构建的表数据大小 = 游戏文件大小 - 76      # 48 字节封装 + 4 字节计数前缀 + 24 字节 LDLD 头
+```
+
+验证:未改动的小表(arc_settings / beam_settings)差值恰好 48;射弹表
+`95292 - 76 = 95216 = 16 + 350 × 272` —— **在开游戏之前就预测出了新构建的精确表大小**,
+后来被实机日志逐字证实(count=350 stride=272 size=95216)。
+
+`data/game` 里那 54 个 `generated_*.dl_bin` 的 mtime 就是本次更新的时间戳,
+可以用来确认「游戏到底更新没更新」—— 这应该是最先看的一眼。
+
 ## 7. 工作流
 
 ### 第 0 步:离线把答案挖出来
@@ -648,6 +830,7 @@ end
 | `references/hd2-eruptor-dominator-案例.md` | 把 R-36 爆裂铳的射弹套到 JAR-5 主宰上(纯内存改射弹表) |
 | `references/hd2-leveller-double-案例.md` | **让 EAT-411 荡平者一次空投两根** —— 离线全解 + 一次实机侦察 + 64 字节补丁 |
 | `references/hd2-orbital-laser-案例.md` | **轨道激光取消次数限制 + 冷却 300→180 秒** —— 社区明文 JSON 起步;踩中「DLArray 内存里是指针」+「扫描器拖垮帧率」;最终靠**整表复现反推字段偏移**,并推翻了自己离线推导的偏移 |
+| `references/hd2-build-update-repair-案例.md` | **游戏更新一次打掉四个 mod 的完整抢修记录** —— 「写死的表大小闸门静默失效」「判据本身成了故障源(枚举漂移 144→149)」「枚举下标回收(201/237)」「FFI 类型双关被 JIT 缓存」「每帧重试刷出 1.1MB 日志」「mod manager 把 mod 删了」以及「离线预测新构建表大小」的实测数据与修法 |
 | `references/hd2-carpet-bomb-案例.md` | **把从未发布、且投放载具已被删掉的「飞鹰地毯式空袭」搬回游戏(7 轮迭代)** —— 踩满:仿真器 Lua 版本 / 字段是 byte 且位打包 / UI 列表闸门不在数据里(必须借壳)/ 借壳继承原战备机制 / 卡面数值是标定量 / 枚举下标被回收 / payload 数组语义与借数组。**想知道"怎么让隐藏内容被玩家看见",先看这篇** |
 ## 12. 借壳法:把未发布 / 隐藏内容搬进玩家 UI
 
