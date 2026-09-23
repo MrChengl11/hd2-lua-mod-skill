@@ -677,6 +677,66 @@ write_file("projectile_table.txt", …)   -- 350 行,几十 KB
 `data/game` 里那 54 个 `generated_*.dl_bin` 的 mtime 就是本次更新的时间戳,
 可以用来确认「游戏到底更新没更新」—— 这应该是最先看的一眼。
 
+### 6.41 禁止周期性全量重扫:消灭每 10 分钟掉帧 40 秒的元凶
+
+`deep_seconds = 600` 或 `full_rescan_seconds = 600` 是 Mod 周期性掉帧的头号元凶。
+实测:在游戏进入第 10 分钟、20 分钟时，Mod 强制回到 `phase = "scanning"`，调用 `VirtualQuery`
+遍历整个 128TB 地址空间里的近 30,000 个内存区，每 2 帧占用 4ms~16ms CPU 运算时间，
+持续长达 **2,500 ~ 2,600 帧 (约 35 ~ 45 秒)**。这导致 60 FPS 游戏瞬间跌至 30~40 FPS，
+重扫结束后帧率自行恢复。
+
+而实机记录显示，内存中自始至终只有 1 个副本，重复重扫是 100% 的纯损耗。
+
+**规则: 一旦数据校验通过并打上补丁，绝不进行无理由的周期性全量重扫。**
+只有在被动复查时检测到所有已打补丁的副本均已失效 (`alive == 0`，证明地图彻底卸载重载) 时，
+才允许重新开启慢速重扫流程。
+
+### 6.42 维护扫描必须有硬性 CPU 时间上限 (os.clock deadline)
+
+针对已知区块观察窗口的局部维护扫描 (`maintenance_scan`)，绝不能写成无上限的同步 while 循环。
+当合并后的窗口有几 MB 时，单帧内会被同步耗尽，造成严重的一帧卡顿。
+
+**修法**: 必须引入 `local deadline = os.clock() + 0.002` (2ms 硬预算)，
+超预算立即 break 跳出，绝不拖垮主循环。
+
+### 6.43 生命周期收敛模型: INIT → search → validate → patch → verify → cache/finish
+
+一个健壮且对游戏性能零干扰的 Mod，其生命周期应当是**单向收敛**的:
+
+1. **搜索期温和推进**: 单帧预算 `<= 2ms`，单步读取块 `<= 256KB`，步长每 2 帧推进一次，启动无感知；
+2. **打完即休眠**: 打上补丁并通过回读校验后，立即释放 `regions` 列表与扫描缓存，停止内存遍历；
+3. **复查用直读**: `recheck()` 仅根据已记录的 `rec.addr` 读取目标记录 (如 400 字节)，开销小于 1 微秒；
+4. **失效才重搜**: 只要还有 1 份有效副本活着，绝不重搜。
+
+### 6.44 安全退钩守卫 (Guarded Update Unhook)
+
+在包裹 `_G.update` 时，如果直接写 `update = original_update` 退钩，会当场把**排在自身之后挂载的其他 Mod 的 update 链直接截断破坏**。
+
+**修法**:
+```lua
+local original_update = update
+local my_update
+my_update = function(...)
+    if state.retired then return original_update(...) end
+    -- 执行 mod 逻辑
+    return original_update(...)
+end
+update = my_update
+
+state.retire_hook = function()
+    state.retired = true
+    if update == my_update then
+        update = original_update
+    end
+end
+```
+只有当自身依然是当前顶层 wrapper 时才还原；否则置位 `retired = true` 仅旁路自身逻辑，保全整条钩子链。
+
+### 6.45 稳态下禁止高频写盘 (STATUS.txt / 日志频次治理)
+
+不要在平稳运行中每 10~15 秒（900 帧）无条件向磁盘覆写 `STATUS.txt`。频繁的磁盘 I/O 会引起瞬时微卡顿。
+只在状态机发生实质变化 (`state.status_phase ~= state.phase`) 或初次打上补丁时写入一次，稳态运行期间保持静默。
+
 ## 7. 工作流
 
 ### 第 0 步:离线把答案挖出来
@@ -832,6 +892,7 @@ end
 | `references/hd2-orbital-laser-案例.md` | **轨道激光取消次数限制 + 冷却 300→180 秒** —— 社区明文 JSON 起步;踩中「DLArray 内存里是指针」+「扫描器拖垮帧率」;最终靠**整表复现反推字段偏移**,并推翻了自己离线推导的偏移 |
 | `references/hd2-build-update-repair-案例.md` | **游戏更新一次打掉四个 mod 的完整抢修记录** —— 「写死的表大小闸门静默失效」「判据本身成了故障源(枚举漂移 144→149)」「枚举下标回收(201/237)」「FFI 类型双关被 JIT 缓存」「每帧重试刷出 1.1MB 日志」「mod manager 把 mod 删了」以及「离线预测新构建表大小」的实测数据与修法 |
 | `references/hd2-carpet-bomb-案例.md` | **把从未发布、且投放载具已被删掉的「飞鹰地毯式空袭」搬回游戏(7 轮迭代)** —— 踩满:仿真器 Lua 版本 / 字段是 byte 且位打包 / UI 列表闸门不在数据里(必须借壳)/ 借壳继承原战备机制 / 卡面数值是标定量 / 枚举下标被回收 / payload 数组语义与借数组。**想知道"怎么让隐藏内容被玩家看见",先看这篇** |
+| `references/hd2-lifecycle-fps-fix-案例.md` | **告别周期性掉帧与扫描风暴** —— 实机日志抓现行(每10分钟重扫2500帧遍历3万个内存区耗时40秒掉帧50%);确立「打完即休眠、单向收敛」生命周期模型、维护扫描2ms硬预算(os.clock deadline)、安全退钩守卫(Guarded Update Unhook避免切断后续mod链)、稳态禁止高频写盘治理 |
 ## 12. 借壳法:把未发布 / 隐藏内容搬进玩家 UI
 
 数据层开关(`selectable` 之类)通常只决定"这条记录能不能被选用";
